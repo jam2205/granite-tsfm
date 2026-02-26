@@ -1,0 +1,35 @@
+# IG Market data schema for granite-tsfm integration
+# Used by GraniteTSFMStack when consuming data from DuckDBConnector.
+#
+# Columns match the output of DuckDBConnector.fetch():
+#   - timestamp  : datetime (parsed from IG streaming API)
+#   - instrument_id : string (e.g. "GBPUSD", "UK100", "CS.D.EURUSD.CFD.IP")
+#   - mid_price  : float (midpoint of bid/ask spread)
+#   - bid        : float (best bid price from IG)
+#   - ask        : float (best ask price from IG)
+#
+# Typical IG streaming frequencies: tick, 1min, 5min, 1h
+
+id_columns:
+  - instrument_id
+
+timestamp_column: timestamp
+
+# Override target_columns dynamically in GraniteTSFMStack.__init__()
+# Default targets below cover the most common IG market data fields.
+target_columns:
+  - mid_price
+
+observable_columns: []
+control_columns: []
+conditional_columns: []
+static_categorical_columns: []
+
+# Default frequency for IG streaming minute bars; override with 5min / 1h as needed
+freq: 1min
+
+scale:
+  scaling: true
+  scaler_type: standard   # z-score per instrument per target column
+
+encode_categorical: false
