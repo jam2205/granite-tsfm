@@ -2,11 +2,11 @@
 name = "tsfminference"
 version = "0.0.0"
 description = "Service layer for TSFM granite models."
-license-files = ["LICENSE"]
 authors = [
   { name = "IBM" }
 ]
-requires-python = ">=3.10,<3.13"
+requires-python = ">=3.11,<3.14"
+
 dependencies = [
   "filelock",
   "fastapi",
@@ -15,11 +15,13 @@ dependencies = [
   "uvicorn-worker",
   "prometheus_client",
   "psutil",
-  "granite-tsfm"
-]
+  "granite-tsfm",
+  "datasets>=4.5", # with python3.12 this gets back versioned without this for some reason
+  ]
 
 [tool.uv.sources]
-granite-tsfm = { git = "https://github.com/ibm-granite/granite-tsfm.git", branch = "uv" }
+granite-tsfm = { git = "https://github.com/ibm-granite/granite-tsfm.git", branch = "destiny" }
+# granite-tsfm = { path = "../../"}
 
 [project.optional-dependencies]
 dev = [
@@ -30,9 +32,14 @@ dev = [
   "pytest-coverage",
 ]
 
+torch-cpu = [
+  "torch"
+]
+
 sagemaker = [
   "sagemaker",
   "boto3",
+  "mlflow>=2.2.1"
 ]
 
 [tool.setuptools.packages.find]
@@ -41,3 +48,5 @@ include = ["tsfminference"]
 [build-system]
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
+
+

@@ -1,6 +1,7 @@
 # Copyright contributors to the TSFM project
 #
 import json
+import logging
 import os
 import random
 import tempfile
@@ -15,6 +16,7 @@ from tsfm_public.toolkit.time_series_preprocessor import extend_time_series
 from tsfm_public.toolkit.util import encode_data, select_by_index
 
 
+logger = logging.getLogger(__name__)
 DUMPPAYLOADS = int(os.getenv("TSFM_TESTS_DUMP_PAYLOADS", "0")) == 1
 
 model_param_map = {
@@ -76,7 +78,9 @@ def ts_data(ts_data_base, request):
     }
 
 
-def get_inference_response(msg: Dict[str, Any], dumpfile: Optional[Union[str, None]] = None) -> pd.DataFrame:
+def get_inference_response(
+    msg: Dict[str, Any], dumpfile: Optional[Union[str, None]] = None, suppresslog: bool = True
+) -> pd.DataFrame:
     URL = (
         "http://127.0.0.1:8000/v1/inference/forecasting"
         if os.environ.get("TSFM_FORECASTING_ENDPOINT", None) is None
@@ -85,8 +89,8 @@ def get_inference_response(msg: Dict[str, Any], dumpfile: Optional[Union[str, No
     headers = {}
     if dumpfile:
         json.dump(msg, fp=open(dumpfile, "w"), indent=4)
-    req = requests.post(URL, json=msg, headers=headers)
 
+    req = requests.post(URL, json=msg, headers=headers)
     #
     if req.ok:
         resp = req.json()
@@ -94,7 +98,8 @@ def get_inference_response(msg: Dict[str, Any], dumpfile: Optional[Union[str, No
         df = [pd.DataFrame.from_dict(r) for r in resp["results"]]
         return df, {k: v for k, v in resp.items() if "data_point" in k}
     else:
-        print(req.text)
+        if not suppresslog:
+            logger.error("Request failed with status code %s: %s", req.status_code, req)
         return None, req
 
 
@@ -255,8 +260,7 @@ def test_zero_shot_forecast_inference(ts_data):
     assert counts["output_data_points"] == prediction_length * len(params["target_columns"]) * num_ids
 
     # test multi-time series, errors
-    test_data_ = test_data.copy()
-    test_data_ = test_data_.iloc[3:]
+    test_data_ = test_data.iloc[3:].copy()
 
     msg = {
         "model_id": model_id_path,
@@ -352,7 +356,7 @@ def test_zero_shot_forecast_inference(ts_data):
     msg = {
         "model_id": model_id_path,
         "parameters": {
-            "prediction_length": params["prediction_length"] // 4,
+            "prediction_length": params["prediction_length"],
         },
         "schema": {
             "timestamp_column": params["timestamp_column"],
@@ -365,9 +369,9 @@ def test_zero_shot_forecast_inference(ts_data):
 
     df_out, counts = get_inference_response(msg)
     assert len(df_out) == 1
-    assert df_out[0].shape[0] == prediction_length // 4
+    assert df_out[0].shape[0] == prediction_length
     assert counts["input_data_points"] == context_length * len(params["target_columns"])
-    assert counts["output_data_points"] == (prediction_length // 4) * len(params["target_columns"])
+    assert counts["output_data_points"] == prediction_length * len(params["target_columns"])
 
     # single series
     # error wrong prediction length
@@ -376,7 +380,8 @@ def test_zero_shot_forecast_inference(ts_data):
     msg = {
         "model_id": model_id_path,
         "parameters": {
-            "prediction_length": params["prediction_length"] * 40,
+            "prediction_length": params["prediction_length"]
+            * 400,  # something larger than the model's max prediction length
         },
         "schema": {
             "timestamp_column": params["timestamp_column"],
@@ -396,7 +401,7 @@ def test_zero_shot_forecast_inference(ts_data):
     msg = {
         "model_id": model_id_path,
         "parameters": {
-            "prediction_length": params["prediction_length"] // 4,
+            "prediction_length": params["prediction_length"],
         },
         "schema": {
             "timestamp_column": params["timestamp_column"],
@@ -409,9 +414,9 @@ def test_zero_shot_forecast_inference(ts_data):
 
     df_out, counts = get_inference_response(msg)
     assert len(df_out) == 1
-    assert df_out[0].shape[0] == prediction_length // 4
+    assert df_out[0].shape[0] == prediction_length
     assert counts["input_data_points"] == context_length * len(params["target_columns"][1:])
-    assert counts["output_data_points"] == (prediction_length // 4) * len(params["target_columns"][1:])
+    assert counts["output_data_points"] == prediction_length * len(params["target_columns"][1:])
 
 
 @pytest.mark.parametrize("ts_data", ["ttm-r2-etth-finetuned-control"], indirect=True)
@@ -441,7 +446,7 @@ def test_future_data_forecast_inference(ts_data):
     )
     future_data = future_data.fillna(0)
     # target data not used for future data (but no harm in keeping it)
-    future_data.drop("OT", axis=1, inplace=True)
+    future_data = future_data.drop("OT", axis=1)
 
     prediction_length = 30
 
