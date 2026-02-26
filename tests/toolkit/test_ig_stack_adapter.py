@@ -344,6 +344,73 @@ class TestGraniteTSFMStack:
         # Should be parseable as ISO datetime
         datetime.fromisoformat(result.metadata["run_timestamp"])
 
+    # ------------------------------------------------------------------
+    # scale_factor auto-computation tests
+    # ------------------------------------------------------------------
+
+    def test_scale_factor_auto_computed_for_minute_freq(self):
+        """1-minute data: scale_factor = 24 / (24*60) ≈ 0.016667."""
+        stack = GraniteTSFMStack(freq="1min")
+        expected = 24.0 / (24.0 * 60.0)
+        assert abs(stack.flowstate_scale_factor - expected) < 1e-5, (
+            f"Expected scale_factor≈{expected:.6f} for freq='1min', got {stack.flowstate_scale_factor}"
+        )
+
+    def test_scale_factor_auto_computed_for_hourly_freq(self):
+        """Hourly data: scale_factor = 24/24 = 1.0 (FlowState base frequency)."""
+        stack = GraniteTSFMStack(freq="1h")
+        assert abs(stack.flowstate_scale_factor - 1.0) < 1e-5, (
+            f"Expected scale_factor=1.0 for freq='1h', got {stack.flowstate_scale_factor}"
+        )
+
+    def test_scale_factor_explicit_override(self):
+        """Explicit flowstate_scale_factor overrides auto-computation."""
+        stack = GraniteTSFMStack(freq="1min", flowstate_scale_factor=0.5)
+        assert stack.flowstate_scale_factor == 0.5
+
+    # ------------------------------------------------------------------
+    # TTM context_length sync test
+    # ------------------------------------------------------------------
+
+    def test_load_models_syncs_context_length_to_checkpoint(self, market_df):
+        """When get_model() returns a checkpoint with a smaller context_length,
+        self.context_length must be updated so build_preprocessor() creates
+        windows that match the model."""
+        stack = GraniteTSFMStack(context_length=500, prediction_length=24, freq="1min")
+
+        # Mock TTM checkpoint that has context_length=360 (< requested 500)
+        mock_ttm = MagicMock()
+        mock_ttm.config.context_length = 360
+        mock_ttm.config.prediction_length = 60
+        mock_ttm.to.return_value = mock_ttm
+        mock_ttm.eval.return_value = mock_ttm
+
+        mock_tspulse = MagicMock()
+        mock_tspulse.to.return_value = mock_tspulse
+        mock_tspulse.eval.return_value = mock_tspulse
+
+        mock_flowstate = MagicMock()
+        mock_flowstate.to.return_value = mock_flowstate
+        mock_flowstate.eval.return_value = mock_flowstate
+
+        with (
+            patch("tsfm_public.toolkit.ig_stack_adapter.get_model", return_value=mock_ttm),
+            patch(
+                "tsfm_public.models.tspulse.TSPulseForReconstruction.from_pretrained",
+                return_value=mock_tspulse,
+            ),
+            patch(
+                "tsfm_public.models.flowstate.FlowStateForPrediction.from_pretrained",
+                return_value=mock_flowstate,
+            ),
+        ):
+            stack.load_models()
+
+        # context_length must be synced to checkpoint value
+        assert stack.context_length == 360, (
+            f"Expected context_length=360 after sync, got {stack.context_length}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # ExcelResultWriter tests

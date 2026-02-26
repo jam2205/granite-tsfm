@@ -66,6 +66,44 @@ def _import_openpyxl():
 
 
 # ---------------------------------------------------------------------------
+# Frequency helpers
+# ---------------------------------------------------------------------------
+
+# Maps tsfm / pandas-2.2 freq strings → old-style aliases expected by get_fixed_factor()
+_TSFM_TO_FLOWSTATE: Dict[str, str] = {
+    "min": "T",
+    "1min": "T",
+    "2min": "2T",
+    "5min": "5T",
+    "10min": "10T",
+    "15min": "15T",
+    "30min": "30T",
+    "h": "H",
+    "1h": "H",
+    "H": "H",
+    "1H": "H",
+    "6h": "6H",
+    "6H": "6H",
+    "D": "D",
+    "d": "D",
+    "1D": "D",
+    "1d": "D",
+    "W": "W",
+    "M": "M",
+    "Q": "Q",
+}
+
+
+def _freq_to_flowstate_alias(freq: str) -> str:
+    """Convert a tsfm/pandas-2.2 freq string to the old-style alias expected by
+    :func:`tsfm_public.models.flowstate.utils.utils.get_fixed_factor`.
+
+    Falls back to the original string for any unrecognised value.
+    """
+    return _TSFM_TO_FLOWSTATE.get(freq, freq)
+
+
+# ---------------------------------------------------------------------------
 # StackResult
 # ---------------------------------------------------------------------------
 
@@ -362,7 +400,7 @@ class GraniteTSFMStack:
         # FlowState
         flowstate_model_path: str = DEFAULT_FLOWSTATE_PATH,
         flowstate_quantiles: Optional[List[float]] = None,
-        flowstate_scale_factor: float = 1.0,
+        flowstate_scale_factor: Optional[float] = None,  # None = auto-compute from freq
         # Shared scaling
         scaling: bool = True,
         scaler_type: str = "standard",
@@ -391,7 +429,27 @@ class GraniteTSFMStack:
 
         self.flowstate_model_path = flowstate_model_path
         self.flowstate_quantiles = flowstate_quantiles
-        self.flowstate_scale_factor = max(flowstate_scale_factor, 1e-3)
+
+        if flowstate_scale_factor is None:
+            try:
+                from tsfm_public.models.flowstate.utils.utils import get_fixed_factor
+
+                self.flowstate_scale_factor = get_fixed_factor(_freq_to_flowstate_alias(freq))
+                LOGGER.info(
+                    "FlowState scale_factor auto-set to %.6f for freq=%r",
+                    self.flowstate_scale_factor,
+                    freq,
+                )
+            except (NotImplementedError, Exception) as exc:
+                LOGGER.warning(
+                    "Could not auto-compute FlowState scale_factor for freq=%r (%s). "
+                    "Defaulting to 1.0.",
+                    freq,
+                    exc,
+                )
+                self.flowstate_scale_factor = 1.0
+        else:
+            self.flowstate_scale_factor = max(flowstate_scale_factor, 1e-3)
 
         self.scaling = scaling
         self.scaler_type = scaler_type
@@ -424,16 +482,43 @@ class GraniteTSFMStack:
         from tsfm_public.toolkit.get_model import get_model
 
         # TTM — use smart revision selector
-        LOGGER.info("Loading TTM from %s ...", self.ttm_model_path)
+        # Normalise freq to canonical pandas alias (DEFAULT_FREQUENCY_MAPPING keys)
+        # so get_model()'s frequency-token filter works correctly.
+        # e.g. "1min" (not in mapping) → "min" (in mapping, R=1)
+        try:
+            from pandas.tseries.frequencies import to_offset
+
+            _norm_freq = to_offset(self.freq).freqstr
+        except Exception:
+            _norm_freq = self.freq
+
+        LOGGER.info("Loading TTM from %s (freq=%s) ...", self.ttm_model_path, _norm_freq)
         self._ttm_model = get_model(
             model_path=self.ttm_model_path,
             model_name="ttm",
             context_length=self.context_length,
             prediction_length=self.prediction_length,
-            freq=self.freq,
+            freq=_norm_freq,
             force_return=self.ttm_force_return,
         )
         self._ttm_model = self._ttm_model.to(self.device).eval()
+
+        # Sync self.context_length to the actual checkpoint value.
+        # get_model() selects the largest checkpoint whose context_length ≤ requested,
+        # so the loaded model may have a smaller context window than self.context_length.
+        # build_preprocessor() must create windows that match the checkpoint exactly.
+        actual_ctx = self._ttm_model.config.context_length
+        if actual_ctx != self.context_length:
+            LOGGER.warning(
+                "Loaded TTM checkpoint has context_length=%d but requested context_length=%d. "
+                "Updating self.context_length to %d so build_preprocessor() creates "
+                "windows that match the checkpoint.",
+                actual_ctx,
+                self.context_length,
+                actual_ctx,
+            )
+            self.context_length = actual_ctx
+
         LOGGER.info(
             "TTM loaded: context=%d, prediction=%d",
             self._ttm_model.config.context_length,
